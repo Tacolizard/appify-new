@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+declare -a deps
+declare input
+declare rawname
+declare customscript
+declare icon
+
+#template for the script that will install dependencies
+depman="#!/usr/bin/env bash
+installed=0
+if [ \$installed == 1 ]; then
+	killall Terminal;
+	exit 0;
+fi
+osascript -e 'display dialog \"Running installer...\" buttons{\"OK\"} default button 1 with title \"Installation Manager\"'"
+
+#check cmd args
+if [ ! -f "${1}" ]; then
+	echo "${1}: No such file"
+	echo "Usage: appify-new [script]"
+	exit 1
+fi
+
+#function to ask for dependencies and read them into an array
+function getDeps {
+	read -p "Enter brew dependencies? [y/n]: " input
+	if [ "$input" != "y" ] && [ "$input" != "Y" ]; then
+		return 0;
+	fi
+	echo Enter package names seperated by spaces:
+	IFS=' ' read -ra deps
+	unset IFS
+}
+#function to allow the user to add their own code to the installer
+function custInstaller {
+	read -p "Enter path to custom installer script. Leave blank to use the default installer: " input
+	if [ -z "$input" ]; then
+			return 0;
+	fi
+	customscript=$input
+}
+#function to ask the user for an icon file
+function custIcon {
+	read -p "Enter path to app icon. Leave blank for the default: " input
+	if [ -z "$input" ]; then
+		icon="/System/Library/CoreServices/CoreTypes.bundle/Contents/Resources/GenericApplicationIcon.icns"
+		return 0;
+	fi
+	icon=$input
+}
+
+#sort out the name of the program
+read -rp "Enter app name: " rawname
+APPNAME=${2:-$(basename "$rawname" '.sh')}
+DIR="${APPNAME}.app/Contents/MacOS"
+RSC="${APPNAME}.app/Contents/Resources"
+script="${DIR}/${APPNAME}"
+
+if [ -a "${APPNAME}.app" ]; then
+	echo "${PWD}/${APPNAME}.app already exists :("
+	exit 1
+fi
+
+getDeps
+custInstaller
+custIcon
+
+#create the app's folder structure, copy over the needed files and make them executable
+mkdir -p "${DIR}"
+mkdir -p "${RSC}"
+cp "${1}" $script
+chmod +x $script
+cp "$icon" "${RSC}/${APPNAME}.icns"
+depfile="${DIR}/deps"
+
+cat <<EOF > "${APPNAME}.app/Contents/Info.plist"
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>CFBundleExecutable</key>
+    <string>$APPNAME</string>
+    <key>CFBundleGetInfoString</key>
+    <string>$APPNAME</string>
+    <key>CFBundleIconFile</key>
+    <string>$APPNAME</string>
+    <key>CFBundleName</key>
+    <string>$APPNAME</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleSignature</key>
+    <string>1337</string>
+  </dict>
+</plist>
+EOF
+
+#create a script with the dependency code template
+echo -e "$depman" > $depfile
+chmod +x $depfile
+
+#append brew commands for each brew dependency that was entered
+for dep in "${deps[@]}"; do
+	echo -e "brew install $dep" >> $depfile
+done
+
+if [ ! -z $customscript ]; then
+	cat $customscript >> $depfile;
+fi
+
+echo -e "\nosascript -e 'display dialog \"Installation Complete\" buttons{\"OK\"} default button 1 with title \"Installation Manager\"'" >> $depfile
+echo -e "\nkillall Terminal" >> $depfile
+
+#prepend code to execute the dependency code and then disable the dep code to the main script
+#this makes it so the deps script is only run when the program is run for the first time
+echo -e "sed -e '2s/.*/installed=1/' -i '' \"\${DIR}/deps\"\n$(cat $script)" > $script
+echo -e "open -WFa Terminal \"\${DIR}/deps\"\n$(cat $script)" > $script
+echo -e "DIR=\"\$( cd \"\$( dirname \"\${BASH_SOURCE[0]}\" )\" && pwd )\"\n$(cat $script)" > $script
+echo -e "#!/usr/bin/env bash\n$(cat $script)" > $script
+
+echo -e "\nSuccess! App created at: "
+echo "${PWD}/$APPNAME.app"
